@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -64,19 +65,27 @@ def atomic_write(path: Path, content: str) -> None:
             shutil.copy2(path, backup)
         except OSError:
             pass
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp_name = None
     try:
-        with tmp.open("w", encoding="utf-8") as fh:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+            text=True,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
     except OSError as exc:
-        raise RuntimeError(f"Could not write temporary file {tmp}: {exc}") from exc
+        if tmp_name:
+            Path(tmp_name).unlink(missing_ok=True)
+        raise RuntimeError(f"Could not write temporary file for {path}: {exc}") from exc
 
     last_error = None
     for attempt in range(5):
         try:
-            os.replace(tmp, path)
+            os.replace(tmp_name, path)
             return
         except PermissionError as exc:
             last_error = exc
@@ -84,6 +93,8 @@ def atomic_write(path: Path, content: str) -> None:
         except OSError as exc:
             last_error = exc
             time.sleep(0.15 * (attempt + 1))
+    if tmp_name:
+        Path(tmp_name).unlink(missing_ok=True)
     raise RuntimeError(
         f"Could not replace locked file {path}. The original file was kept intact. "
         f"Close any editor/PDF/LaTeX process using it and retry. Last error: {last_error}"
@@ -268,6 +279,8 @@ class ResearchProjectManager:
         self.live_monitor = ResearchLiveMonitor()
         self._background_stop = threading.Event()
         self._background_thread: Optional[threading.Thread] = None
+        self._background_project_dir: Optional[Path] = None
+        self._state_lock = threading.RLock()
         self.reasoning_model = reasoning_model
         self.model_config = dict(self.DEFAULT_MODEL_CONFIG)
         if research_step_model:
@@ -299,6 +312,8 @@ class ResearchProjectManager:
     # ===== public commands =====
 
     def start(self, problem: str) -> str:
+        if self._background_thread and self._background_thread.is_alive():
+            return "Background research is running. Stop it before switching/starting another research project."
         problem_lower = problem.lower()
         slug = "riemann_hypothesis" if "riemannsche vermutung" in problem_lower or "riemann hypothesis" in problem_lower else slugify(problem)
         project_dir = self.root / slug
@@ -402,6 +417,8 @@ class ResearchProjectManager:
         checkpoint = self._load_json(project_dir / "checkpoint.json", {})
         claims = self._load_json(project_dir / "claims.json", [])
         formal_lemmas = self._load_json(project_dir / "formal_lemmas.json", [])
+        old_active_id = checkpoint.get("active_approach_id")
+        old_progress_signature = checkpoint.get("_last_progress_signature")
 
         active = self._find_approach(approaches, approach_id) if approach_id else self._select_next_approach(approaches, status.get("focused_approach_id"))
         stagnation = self._enforce_stagnation_limits(project_dir, active, approaches, status, checkpoint)
@@ -466,12 +483,26 @@ class ResearchProjectManager:
         checkpoint.setdefault("time_spent_per_approach", {})
         checkpoint.setdefault("tokens_spent_per_approach", {})
         checkpoint.setdefault("repetition_score_per_approach", {})
-        previous_summary = str(checkpoint.get("current_summary", ""))
-        if active["id"] == checkpoint.get("active_approach_id") and previous_summary == checkpoint.get("_last_summary_seen"):
+        normalized_note = re.sub(r"\bstep\s+\d+\b", "step", experiment_note.lower())
+        normalized_note = re.sub(r"\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}\b", "timestamp", normalized_note)
+        normalized_gaps = sorted(set(str(g).strip().lower() for g in status.get("known_gaps", []) if str(g).strip()))
+        new_claims = []
+        if claims:
+            claim_text = str(claims[-1].get("text", "")).lower()
+            claim_text = re.sub(r"\bresearch step\s+\d+\b", "research step", claim_text)
+            new_claims.append(claim_text)
+        progress_signature = hashlib.sha256(json.dumps({
+            "approach": active["id"],
+            "new_claims": new_claims,
+            "lemma_titles": [str(x.get("title", "")).strip().lower() for x in formal_lemmas[-5:]],
+            "open_gaps": normalized_gaps,
+            "result": normalized_note[:500],
+        }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        if old_active_id == active["id"] and old_progress_signature == progress_signature:
             checkpoint["repetition_score_per_approach"][active["id"]] = checkpoint["repetition_score_per_approach"].get(active["id"], 0) + 1
         else:
             checkpoint["repetition_score_per_approach"][active["id"]] = 0
-        checkpoint["_last_summary_seen"] = checkpoint.get("current_summary", "")
+        checkpoint["_last_progress_signature"] = progress_signature
         checkpoint["time_spent_per_approach"][active["id"]] = checkpoint["time_spent_per_approach"].get(active["id"], 0) + 60
         checkpoint["tokens_spent_per_approach"][active["id"]] = checkpoint["tokens_spent_per_approach"].get(active["id"], 0) + 500
 
@@ -547,7 +578,7 @@ class ResearchProjectManager:
             state = self._load_autopilot_state(project_dir)
             if not state.get("running"):
                 break
-            result = self.autopilot_next()
+            result = self.autopilot_next(project_dir=project_dir)
             outputs.append(result)
             state = self._load_autopilot_state(project_dir)
             if state.get("waiting_for_user") or state.get("status") == "waiting_for_user_decision":
@@ -581,8 +612,14 @@ class ResearchProjectManager:
             return "Noch kein Autopilot-Report vorhanden."
         return json.dumps(report[-20:], indent=2, ensure_ascii=False)
 
-    def autopilot_next(self) -> str:
-        project_dir = self._require_active()
+    def autopilot_next(self, project_dir: Optional[Path] = None) -> str:
+        with self._state_lock:
+            project_dir = Path(project_dir) if project_dir is not None else self._require_active()
+            if project_dir is not None and not project_dir.exists():
+                raise RuntimeError(f"Research project no longer exists: {project_dir}")
+            return self._autopilot_next_locked(project_dir)
+
+    def _autopilot_next_locked(self, project_dir: Path) -> str:
         state = self._load_autopilot_state(project_dir)
         plan = self._autopilot_decide(project_dir)
         before = self._autopilot_snapshot(project_dir)
@@ -1060,15 +1097,33 @@ class ResearchProjectManager:
         atomic_json(project_dir / "quality_audit.json", report)
         return json.dumps(report, indent=2, ensure_ascii=False)
 
-    def background_research_start(self, max_steps: int, interval_seconds: float = 5.0, max_minutes: int = 60) -> str:
+    def background_research_start(
+        self,
+        max_steps: int,
+        interval_seconds: float = 5.0,
+        max_minutes: int = 60,
+        initial_completed_steps: int = 0,
+        started_at: Optional[str] = None,
+    ) -> str:
         project_dir = self._require_active()
         if self._background_thread and self._background_thread.is_alive():
             return "Background research is already running."
         max_steps = max(1, min(int(max_steps), 10000))
+        initial_completed_steps = max(0, min(int(initial_completed_steps), max_steps))
         interval_seconds = max(0.1, float(interval_seconds))
         deadline = time.time() + max(1, int(max_minutes)) * 60
         state_path = project_dir / "background_research.json"
-        state = {"status": "running", "max_steps": max_steps, "completed_steps": 0, "interval_seconds": interval_seconds, "max_minutes": max_minutes, "started_at": now_iso(), "last_error": None}
+        state = {
+            "status": "running",
+            "project_dir": str(project_dir),
+            "max_steps": max_steps,
+            "completed_steps": initial_completed_steps,
+            "interval_seconds": interval_seconds,
+            "max_minutes": max_minutes,
+            "started_at": started_at or now_iso(),
+            "resumed_at": now_iso() if initial_completed_steps else None,
+            "last_error": None,
+        }
         atomic_json(state_path, state)
         autopilot_state = self._load_autopilot_state(project_dir)
         autopilot_state["continuous_research"] = True
@@ -1077,11 +1132,17 @@ class ResearchProjectManager:
             autopilot_state["status"] = "active"
         atomic_json(project_dir / "autopilot_state.json", autopilot_state)
         self._background_stop.clear()
+        self._background_project_dir = project_dir
 
-        def worker() -> None:
+        def worker(bound_project_dir: Path) -> None:
             while state["completed_steps"] < max_steps and time.time() < deadline and not self._background_stop.is_set():
                 try:
-                    output = self.autopilot_next()
+                    try:
+                        output = self.autopilot_next(project_dir=bound_project_dir)
+                    except TypeError:
+                        # Backward-compatible for tests/custom monkeypatches that still
+                        # expose the old no-argument autopilot_next signature.
+                        output = self.autopilot_next()
                     state["completed_steps"] += 1
                     state["last_output"] = str(output)[-2500:]
                     state["last_checkpoint_at"] = now_iso()
@@ -1106,17 +1167,19 @@ class ResearchProjectManager:
             state["completed_at"] = now_iso()
             atomic_json(state_path, state)
 
-        self._background_thread = threading.Thread(target=worker, name=f"research-{project_dir.name}", daemon=True)
+        self._background_thread = threading.Thread(target=worker, args=(project_dir,), name=f"research-{project_dir.name}", daemon=True)
         self._background_thread.start()
         return json.dumps(state, indent=2, ensure_ascii=False)
 
     def background_research_stop(self) -> str:
         self._background_stop.set()
-        project_dir = self._require_active()
+        project_dir = self._background_project_dir or self._require_active()
         state = self._load_json(project_dir / "background_research.json", {})
         state["status"] = "stop_requested"
         state["stop_requested_at"] = now_iso()
         atomic_json(project_dir / "background_research.json", state)
+        if self._background_thread and self._background_thread.is_alive():
+            self._background_thread.join(timeout=5)
         return "Background research stop requested."
 
     def background_research_resume(self) -> str:
@@ -1124,11 +1187,26 @@ class ResearchProjectManager:
         previous = self._load_json(project_dir / "background_research.json", {})
         if not previous:
             return "No background checkpoint found."
-        remaining = max(0, int(previous.get("max_steps", 0)) - int(previous.get("completed_steps", 0)))
+        completed_before = int(previous.get("completed_steps", 0))
+        total_steps = int(previous.get("max_steps", 0))
+        remaining = max(0, total_steps - completed_before)
         if remaining <= 0:
             return "Background checkpoint is already complete."
-        result = json.loads(self.background_research_start(remaining, float(previous.get("interval_seconds", 5)), int(previous.get("max_minutes", 60))))
-        result["resumed_from_completed_steps"] = int(previous.get("completed_steps", 0))
+        started_at = str(previous.get("started_at") or now_iso())
+        try:
+            started_ts = datetime.fromisoformat(started_at)
+            elapsed_minutes = max(0.0, (datetime.now() - started_ts).total_seconds() / 60.0)
+        except Exception:
+            elapsed_minutes = 0.0
+        remaining_minutes = max(1, int(float(previous.get("max_minutes", 60)) - elapsed_minutes))
+        result = json.loads(self.background_research_start(
+            total_steps,
+            float(previous.get("interval_seconds", 5)),
+            remaining_minutes,
+            initial_completed_steps=completed_before,
+            started_at=started_at,
+        ))
+        result["resumed_from_completed_steps"] = completed_before
         atomic_json(project_dir / "background_research.json", result)
         return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -1264,7 +1342,7 @@ class ResearchProjectManager:
     def _formal_record_is_current(self, lemma: Dict[str, Any]) -> bool:
         record = lemma.get("formal_verification", {})
         artifact_text = str(record.get("artifact_path", ""))
-        if not record.get("verified") or record.get("status") != "verified" or not artifact_text:
+        if not record.get("verified") or record.get("status") not in {"verified", "lean_artifact_verified"} or not artifact_text:
             return False
         try:
             artifact = Path(artifact_text)

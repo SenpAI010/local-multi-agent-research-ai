@@ -28,8 +28,14 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;m
 <section class="card half"><h2>Lemmata / Lean</h2><div id="lemmas"></div></section>
 <section class="card half"><h2>Claims</h2><div id="claims"></div></section>
 <section class="card wide"><h2>LaTeX – letzter Stand</h2><pre id="latex"></pre></section>
-</main><script>
-const esc=s=>String(s??''); const rows=(xs,fn)=>xs.length?xs.map(fn).join(''):'<div class="muted">Noch nichts vorhanden.</div>';
+</main><script nonce="research-live-monitor">
+const esc=s=>String(s??'')
+  .replaceAll('&','&amp;')
+  .replaceAll('<','&lt;')
+  .replaceAll('>','&gt;')
+  .replaceAll('"','&quot;')
+  .replaceAll("'","&#039;");
+const rows=(xs,fn)=>xs.length?xs.map(fn).join(''):'<div class="muted">Noch nichts vorhanden.</div>';
 async function refresh(){try{const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();
 document.querySelector('#title').textContent='Research Live — '+esc(d.problem);document.querySelector('#stamp').textContent='Aktualisiert: '+new Date().toLocaleTimeString();
 document.querySelector('#approach').textContent=esc(d.status.active_approach_id||'–');document.querySelector('#next').textContent=esc(d.status.next_action||d.checkpoint.next_planned_step||'–');
@@ -95,7 +101,15 @@ class ResearchLiveMonitor:
                     body, kind = json.dumps(project_snapshot(project_dir), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8"
                 else:
                     self.send_error(404); return
-                self.send_response(200); self.send_header("Content-Type", kind); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'nonce-research-live-monitor'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             def log_message(self, *_args: Any) -> None: pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", int(port)), Handler)

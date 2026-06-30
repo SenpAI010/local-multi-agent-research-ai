@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -39,6 +40,11 @@ PROMPT_INJECTION_PATTERNS = [
     "execute this code",
     "exfiltrate",
 ]
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def now_iso() -> str:
@@ -245,21 +251,48 @@ class WebResearchProxy:
             self._audit(method, url, purpose, "blocked", str(exc))
             return {"allowed": False, "reason": str(exc)}
 
-        request = urllib.request.Request(
-            url,
-            method=method,
-            headers={
-                "User-Agent": "LocalResearchAgent/1.0 read-only literature retrieval",
-                "Accept": "text/plain,text/xml,application/xml,application/json,application/pdf,text/html;q=0.5",
-            },
-        )
+        current_url = url
+        opener = urllib.request.build_opener(NoRedirectHandler)
         try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                content_type = response.headers.get("Content-Type", "")
-                if method == "HEAD":
-                    self._audit(method, url, purpose, "allowed", "head_ok", content_type=content_type)
-                    return {"allowed": True, "content_type": content_type, "headers": dict(response.headers)}
-                data = self._read_limited(response, self.config()["max_bytes"])
+            for redirect_count in range(4):
+                request = urllib.request.Request(
+                    current_url,
+                    method=method,
+                    headers={
+                        "User-Agent": "LocalResearchAgent/1.0 read-only literature retrieval",
+                        "Accept": "text/plain,text/xml,application/xml,application/json,application/pdf,text/html;q=0.5",
+                    },
+                )
+                try:
+                    response = opener.open(request, timeout=12)
+                except urllib.error.HTTPError as exc:
+                    if exc.code in {301, 302, 303, 307, 308}:
+                        if redirect_count >= 3:
+                            raise ValueError("too_many_redirects") from exc
+                        location = exc.headers.get("Location")
+                        if not location:
+                            raise ValueError("redirect_without_location") from exc
+                        current_url = urllib.parse.urljoin(current_url, location)
+                        parsed = self._validate_url(current_url)
+                        self._validate_domain(parsed.hostname or "")
+                        self._validate_resolved_ips(parsed.hostname or "")
+                        continue
+                    raise
+                with response:
+                    final_url = response.geturl()
+                    final_parsed = self._validate_url(final_url)
+                    self._validate_domain(final_parsed.hostname or "")
+                    self._validate_resolved_ips(final_parsed.hostname or "")
+                    content_type = response.headers.get("Content-Type", "")
+                    if method == "HEAD":
+                        self._audit(method, final_url, purpose, "allowed", "head_ok", content_type=content_type)
+                        return {"allowed": True, "content_type": content_type, "headers": dict(response.headers), "final_url": final_url}
+                    data = self._read_limited(response, self.config()["max_bytes"])
+                    parsed = final_parsed
+                    url = final_url
+                    break
+            else:
+                raise ValueError("too_many_redirects")
         except Exception as exc:
             self._audit(method, url, purpose, "blocked", f"request_failed:{exc}")
             return {"allowed": False, "reason": f"request_failed:{exc}"}
@@ -275,10 +308,12 @@ class WebResearchProxy:
 
         text = data.decode("utf-8", errors="replace")
         text = self._html_to_text(text) if "html" in content_type.lower() else text
+        if prompt_risk:
+            text = self._strip_prompt_injection(text)[:4000]
         cache_path = self.cache_dir / f"{int(time.time())}_{slugify(parsed.netloc)}_{digest[:12]}.txt"
         cache_path.write_text(text, encoding="utf-8")
         self._audit(method, url, purpose, "allowed", "text_cached", sha256=digest, path=str(cache_path), content_type=content_type, prompt_injection_risk=prompt_risk)
-        return {"allowed": True, "text": text, "sha256": digest, "path": str(cache_path), "content_type": content_type, "prompt_injection_risk": prompt_risk}
+        return {"allowed": True, "text": text, "sha256": digest, "path": str(cache_path), "content_type": content_type, "prompt_injection_risk": prompt_risk, "final_url": url}
 
     def _validate_url(self, url: str) -> urllib.parse.ParseResult:
         if re.match(r"^[a-zA-Z]:\\", url) or url.startswith("\\\\"):

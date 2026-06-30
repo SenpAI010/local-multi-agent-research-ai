@@ -210,10 +210,14 @@ class Orchestrator:
             self.turn_pipeline.add_tool_event({"phase": "requested", "tool": tool_name, "arguments": args})
 
             # Tool ausführen
-            try:
-                tool_result = self.tool_funcs[tool_name](**args)
-            except Exception as e:
-                tool_result = {"ok": False, "error": str(e)}
+            if not isinstance(args, dict):
+                tool_result = {"ok": False, "error": "Tool arguments must be an object."}
+            else:
+                try:
+                    raw_result = self.tool_funcs[tool_name](**args)
+                    tool_result = raw_result if isinstance(raw_result, dict) else {"ok": True, "result": raw_result}
+                except Exception as e:
+                    tool_result = {"ok": False, "error": str(e)}
             self.audit.log("tool_call_result", {"tool": tool_name, "ok": tool_result.get("ok"), "result": tool_result})
             self.turn_pipeline.add_tool_event({"phase": "result", "tool": tool_name, "ok": tool_result.get("ok")})
 
@@ -299,12 +303,18 @@ class Orchestrator:
 
         if any(q in text for q in ("wer bin ich", "wer bin ich?", "kennst du mich")):
             profile = self.memory.get_profile().get("user_info", {})
-            name = profile.get("name") or "Umut"
-            role = profile.get("role") or "Mathe-Masterstudent / Entwickler"
-            return f"Du bist {name}. Ich kenne dich als {role} und arbeite mit dir an deinem lokalen Multi-Agenten-System."
+            name = profile.get("name")
+            role = profile.get("role")
+            if name and role:
+                return f"Du bist {name}. Ich kenne dich als {role} und arbeite mit dir an deinem lokalen Multi-Agenten-System."
+            if name:
+                return f"Du bist {name}. Ich arbeite mit dir an deinem lokalen Multi-Agenten-System."
+            return "Ich kenne deinen Namen noch nicht sicher. Ich arbeite mit dir an diesem lokalen Multi-Agenten-System."
 
         if text in {"hi", "hallo", "hey", "servus"}:
-            return "Hi Umut. Ich bin da."
+            profile = self.memory.get_profile().get("user_info", {})
+            name = profile.get("name")
+            return f"Hi {name}. Ich bin da." if name else "Hi! Ich bin da."
 
         if text in {
             "ok", "okay", "stark", "nice", "gut", "super", "passt", "perfekt",

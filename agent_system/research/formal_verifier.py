@@ -40,6 +40,19 @@ class Lean4Verifier:
         r"\bsorry\b", r"\badmit\b", r"\baxiom\b", r"\bopaque\b",
         r"\bunsafe\b", r"by\s*\n?\s*exact\s+Classical\.choice",
     )
+    DANGEROUS_COMMANDS = (
+        r"^\s*#eval\b",
+        r"\brun_tac\b",
+        r"\belab\b",
+        r"\bsyntax\b",
+        r"\bmacro\b",
+        r"\binitialize\b",
+        r"\bIO\.",
+        r"\bimport\s+Lean\b",
+        r"\bimport\s+Lake\b",
+        r"\bimport\s+Std\b",
+    )
+    IMPORT_ALLOWLIST = ("Mathlib",)
 
     def __init__(
         self,
@@ -59,6 +72,7 @@ class Lean4Verifier:
         content = artifact.read_text(encoding="utf-8", errors="replace")
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         issues = self._placeholder_issues(content)
+        issues.extend(self._sandbox_policy_issues(content))
         workdir = Path(cwd or artifact.parent).resolve()
         has_lake = (workdir / "lakefile.toml").exists() or (workdir / "lakefile.lean").exists()
         elan_bin = Path.home() / ".elan" / "bin"
@@ -66,7 +80,8 @@ class Lean4Verifier:
         lake_exe = shutil.which("lake") or str(elan_bin / "lake.exe")
         command = [lake_exe, "env", lean_exe, str(artifact)] if has_lake else [lean_exe, str(artifact)]
         if issues:
-            return FormalVerificationResult(False, "lean4", "rejected_placeholder", str(artifact), digest, command, None, "", "", issues)
+            status = "rejected_placeholder" if any("placeholder" in issue for issue in issues) else "rejected_unsafe_lean_artifact"
+            return FormalVerificationResult(False, "lean4", status, str(artifact), digest, command, None, "", "", issues)
         executable_available = Path(lake_exe if has_lake else lean_exe).is_file() or shutil.which("lake" if has_lake else self.executable)
         if not executable_available and self.runner is subprocess.run:
             return FormalVerificationResult(False, "lean4", "backend_unavailable", str(artifact), digest, command, None, "", "Lean 4 executable not found.", ["lean_not_installed"])
@@ -76,13 +91,24 @@ class Lean4Verifier:
             return FormalVerificationResult(False, "lean4", "backend_error", str(artifact), digest, command, None, "", str(exc), ["lean_execution_failed"])
         ok = proc.returncode == 0
         return FormalVerificationResult(
-            ok, "lean4", "verified" if ok else "compile_failed", str(artifact), digest,
+            ok, "lean4", "lean_artifact_verified" if ok else "compile_failed", str(artifact), digest,
             command, int(proc.returncode), str(proc.stdout)[-4000:], str(proc.stderr)[-4000:],
             [] if ok else ["lean_compile_failed"],
         )
 
     def _placeholder_issues(self, content: str) -> List[str]:
         return [f"forbidden_placeholder:{pattern}" for pattern in self.PLACEHOLDERS if re.search(pattern, content, re.I)]
+
+    def _sandbox_policy_issues(self, content: str) -> List[str]:
+        issues = [
+            f"forbidden_lean_command:{pattern}"
+            for pattern in self.DANGEROUS_COMMANDS
+            if re.search(pattern, content, re.I | re.M)
+        ]
+        for module in re.findall(r"^\s*import\s+([A-Za-z0-9_'.]+)", content, re.M):
+            if not any(module == allowed or module.startswith(allowed + ".") for allowed in self.IMPORT_ALLOWLIST):
+                issues.append(f"import_not_allowlisted:{module}")
+        return issues
 
 
 class LemmaIntegrityChecker:

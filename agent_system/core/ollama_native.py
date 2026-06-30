@@ -4,7 +4,7 @@ Nutzt das echte Ollama tools-Protokoll für strukturierte Funktion-Aufrufe.
 """
 import json
 import requests
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Callable, Tuple, get_args, get_origin, Literal
 import time
 
 class OllamaNative:
@@ -99,28 +99,56 @@ class OllamaNative:
             if param_name in {"self", "cls"}:
                 continue
 
-            # Typ erraten
             type_hint = param.annotation
-            if type_hint == inspect.Parameter.empty:
-                type_str = "string"
-            elif type_hint == int:
-                type_str = "integer"
-            elif type_hint == bool:
-                type_str = "boolean"
-            elif type_hint == list:
-                type_str = "array"
-            elif type_hint == dict:
-                type_str = "object"
-            else:
-                type_str = "string"
-
-            properties[param_name] = {"type": type_str}
+            properties[param_name] = self._json_schema_for_type(type_hint)
             
             # Kein Default = erforderlich
             if param.default == inspect.Parameter.empty:
                 required.append(param_name)
 
         return {"properties": properties, "required": required}
+
+    def _json_schema_for_type(self, type_hint: Any) -> Dict[str, Any]:
+        import inspect
+        from pathlib import Path
+        if type_hint == inspect.Parameter.empty or type_hint is Any:
+            return {"type": "string"}
+        origin = get_origin(type_hint)
+        args = get_args(type_hint)
+        if origin is Literal:
+            values = list(args)
+            schema_type = "string"
+            if values and all(isinstance(v, bool) for v in values):
+                schema_type = "boolean"
+            elif values and all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+                schema_type = "integer"
+            elif values and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+                schema_type = "number"
+            return {"type": schema_type, "enum": values}
+        if origin in {list, List, tuple, set}:
+            item_type = args[0] if args else Any
+            return {"type": "array", "items": self._json_schema_for_type(item_type)}
+        if origin in {dict, Dict}:
+            return {"type": "object"}
+        if origin is Optional or (origin is getattr(__import__("types"), "UnionType", None)):
+            non_none = [arg for arg in args if arg is not type(None)]
+            return self._json_schema_for_type(non_none[0]) if non_none else {"type": "string"}
+        if str(origin) == "typing.Union":
+            non_none = [arg for arg in args if arg is not type(None)]
+            return self._json_schema_for_type(non_none[0]) if non_none else {"type": "string"}
+        if type_hint is int:
+            return {"type": "integer"}
+        if type_hint is float:
+            return {"type": "number"}
+        if type_hint is bool:
+            return {"type": "boolean"}
+        if type_hint in {list, tuple, set}:
+            return {"type": "array"}
+        if type_hint is dict:
+            return {"type": "object"}
+        if type_hint is Path:
+            return {"type": "string"}
+        return {"type": "string"}
 
     def chat_with_tools(
         self,
@@ -209,10 +237,12 @@ class OllamaNative:
 
         if not tool_name or tool_name not in self.tool_funcs:
             return {"ok": False, "error": f"Unknown tool: {tool_name}"}
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "Tool arguments must be an object."}
 
         try:
             result = self.tool_funcs[tool_name](**args)
-            return result
+            return result if isinstance(result, dict) else {"ok": True, "result": result}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
