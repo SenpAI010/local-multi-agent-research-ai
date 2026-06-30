@@ -243,9 +243,24 @@ def test_latex_patch_blocks_file_input_and_verbatim_escape() -> None:
         assert r"\end{verbatim}" not in escaped
 
 
+def test_quick_review_reads_workspace_and_writes_notes() -> None:
+    with TemporaryDirectory() as tmp:
+        manager = ResearchProjectManager(Path(tmp))
+        manager.start("Riemannsche Vermutung")
+        out = manager.quick_review()
+        project = Path(tmp) / "research" / "riemann_hypothesis"
+        reviews = list((project / "notes").glob("quick_review_*.md"))
+        status = json.loads((project / "status.json").read_text(encoding="utf-8"))
+        assert "Quick Review geschrieben" in out
+        assert reviews
+        assert "quick_review_completed" == status["current_status"]
+        assert "Keine aktuell Lean-verifizierten" in reviews[-1].read_text(encoding="utf-8")
+
+
 if __name__ == "__main__":
     test_research_workspace_lifecycle()
     test_llm_proof_attempt_runner_acceptance()
     test_start_new_epoch_with_no_viable_target_pauses()
     test_latex_patch_blocks_file_input_and_verbatim_escape()
+    test_quick_review_reads_workspace_and_writes_notes()
     print("research mode tests passed")

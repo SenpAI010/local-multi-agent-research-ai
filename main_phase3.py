@@ -1031,6 +1031,7 @@ Available Commands:
   /research_mathlib_update Download/update Mathlib dependencies
   /research_replicate L001 Generate and compile an independent proof
   /research_export_report Export Markdown and JSON research report
+  /research_quick_review Read current files, summarize weaknesses, write review
   /research_quality_audit Recheck stored lemmas and sources with hard filters
   /research_background_start <steps> [minutes] Start checkpointed background research
   /research_background_stop Stop background research
@@ -1835,6 +1836,13 @@ Available Commands:
             if user_input.lower() == "/research_export_report":
                 try:
                     print(f"\n{research.export_research_report()}\n")
+                except Exception as e:
+                    print(f"\n{e}\n")
+                continue
+
+            if user_input.lower() == "/research_quick_review":
+                try:
+                    print(f"\n{research.quick_review(apply_improvements=True)}\n")
                 except Exception as e:
                     print(f"\n{e}\n")
                 continue

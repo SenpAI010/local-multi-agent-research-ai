@@ -1061,6 +1061,164 @@ class ResearchProjectManager:
     def export_research_report(self) -> str:
         return json.dumps(self.report_exporter.export(self._require_active()), indent=2, ensure_ascii=False)
 
+    def quick_review(self, apply_improvements: bool = True) -> str:
+        """Read the current research workspace and produce a grounded quick review."""
+        with self._state_lock:
+            project_dir = self._require_active()
+            status = self._load_json(project_dir / "status.json", {})
+            checkpoint = self._load_json(project_dir / "checkpoint.json", {})
+            claims = self._load_json(project_dir / "claims.json", [])
+            lemmas = self._load_json(project_dir / "formal_lemmas.json", [])
+            sources = self._load_json(project_dir / "sources.json", [])
+            experiments = sorted((project_dir / "experiments").glob("*.json")) if (project_dir / "experiments").exists() else []
+            reports = sorted((project_dir / "notes").glob("experiment_analysis_*.json")) if (project_dir / "notes").exists() else []
+            trace_tail = []
+            trace_path = project_dir / "trace.jsonl"
+            if trace_path.exists():
+                for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]:
+                    try:
+                        trace_tail.append(json.loads(line))
+                    except Exception:
+                        continue
+
+            formally_verified = [lemma for lemma in lemmas if lemma.get("proof_status") == "formally_verified" and self._formal_record_is_current(lemma)]
+            unverified_claims = [claim for claim in claims if str(claim.get("status", "unverified")) in {"unverified", "", "heuristic"} or claim.get("risk") == "high"]
+            placeholder_lemmas = [
+                lemma for lemma in lemmas
+                if not self._lemma_admission_check(lemma, [x for x in lemmas if x is not lemma]).get("accepted", False)
+                and not self._formal_record_is_current(lemma)
+            ]
+            source_checks = []
+            irrelevant_sources = []
+            for source in sources:
+                check = self._source_admission_check(str(status.get("problem", "")), source)
+                source_checks.append({"source_id": source.get("source_id"), "accepted": check["accepted"], "reasons": check["reasons"]})
+                if not check["accepted"]:
+                    irrelevant_sources.append(source)
+
+            achievements = [
+                f"Workspace vorhanden: {project_dir}",
+                f"Checkpoint erreicht Schritt {checkpoint.get('last_completed_step', 0)}.",
+                f"Aktiver Ansatz: {status.get('active_approach_id', 'unknown')}.",
+                f"Claims gespeichert: {len(claims)}; davon unverified/high-risk: {len(unverified_claims)}.",
+                f"FormalLemma-Kandidaten gespeichert: {len(lemmas)}.",
+                f"Lean-formal verifiziert und aktuell: {len(formally_verified)}.",
+                f"Quellen gespeichert: {len(sources)}; potenziell abgelehnt/irrelevant: {len(irrelevant_sources)}.",
+                f"Numerische Experimente: {len(experiments)}; Experiment-Analysen: {len(reports)}.",
+                f"Offene Lücken im Status: {len(status.get('known_gaps', []))}.",
+                "Kein Gesamtbeweis wird als akzeptiert markiert, solange kein vollständiges formales Artefakt vorliegt.",
+            ]
+            weaknesses = []
+            if not formally_verified:
+                weaknesses.append("Keine aktuell Lean-verifizierten Artefakte; alle mathematischen Teilresultate bleiben offen/unverified.")
+            if unverified_claims:
+                weaknesses.append(f"{len(unverified_claims)} Claims sind unverified/high-risk und brauchen Quellen- oder Formalprüfung.")
+            if placeholder_lemmas:
+                weaknesses.append(f"{len(placeholder_lemmas)} Lemma-Kandidaten wirken zu generisch/platzhalterhaft oder nicht admissible.")
+            if irrelevant_sources:
+                weaknesses.append(f"{len(irrelevant_sources)} Quellen bestehen die aktuelle Relevanz-/Metadatenprüfung nicht.")
+            if experiments and not reports:
+                weaknesses.append("Experimente existieren, aber es fehlt eine Analyse/Einordnung als Evidenz-only.")
+            if not experiments:
+                weaknesses.append("Keine numerischen Experimente gefunden.")
+            if len(trace_tail) >= 5 and len({str(x.get("action")) for x in trace_tail[-5:]}) <= 2:
+                weaknesses.append("Letzte Trace-Aktionen wirken repetitiv; Autopilot-Plan prüfen.")
+            while len(weaknesses) < 5:
+                weaknesses.append("Weitere Präzisierung nötig: konkrete Definitionen, Quantoren, Abhängigkeiten und Lean-Ziele pro Lemma.")
+
+            plan = [
+                "Zuerst /research_quality_audit ausführen, um Platzhalter-Lemmata und irrelevante Quellen erneut hart zu filtern.",
+                "Dann /research_autopilot_plan prüfen; bei summarize-Schleifen nicht Hintergrundlauf starten.",
+                "A002-Experimente nur analysieren, wenn neue Artefakte vorliegen; numerische Evidenz nie als Beweis zählen.",
+                "Für A001 nur Claims behalten, deren source_ids konkrete Aussagen wirklich stützen.",
+                "Für A003 ein einziges kleines, typisiertes Lean-Ziel formulieren statt offene RH-nahe Großbehauptungen.",
+            ]
+
+            safe_changes = []
+            if apply_improvements:
+                gaps = self._ensure_list(status.get("known_gaps", []))
+                additions = [
+                    "Quick review: no RH proof is claimed; all generated claims remain unverified unless source/formal checks pass.",
+                    "Quick review: prioritize concrete Lean-checkable sublemmas over placeholder positivity criteria.",
+                    "Quick review: numerical experiments are evidence only, never proof.",
+                ]
+                for gap in additions:
+                    if gap not in gaps:
+                        gaps.append(gap)
+                        safe_changes.append(gap)
+                status["known_gaps"] = gaps[-50:]
+                status["current_status"] = "quick_review_completed"
+                status["last_updated"] = now_iso()
+                checkpoint["reason_for_next_step"] = "Quick review recommends quality audit, plan inspection, then one bounded improvement step."
+                checkpoint["last_quick_review_at"] = now_iso()
+                self._save_all(project_dir, status=status, checkpoint=checkpoint)
+
+            review = {
+                "created_at": now_iso(),
+                "project": project_dir.name,
+                "problem": status.get("problem", project_dir.name),
+                "achievements": achievements,
+                "weaknesses": weaknesses[:5],
+                "plan": plan,
+                "counts": {
+                    "claims": len(claims),
+                    "unverified_or_high_risk_claims": len(unverified_claims),
+                    "lemmas": len(lemmas),
+                    "formally_verified_lemmas": len(formally_verified),
+                    "sources": len(sources),
+                    "sources_failing_admission": len(irrelevant_sources),
+                    "experiments": len(experiments),
+                    "experiment_reports": len(reports),
+                },
+                "source_checks": source_checks[:50],
+                "safe_changes_applied": safe_changes,
+            }
+            notes_dir = project_dir / "notes"
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            json_path = notes_dir / f"quick_review_{stamp}.json"
+            md_path = notes_dir / f"quick_review_{stamp}.md"
+            atomic_json(json_path, review)
+            md = [
+                "# Quick Research Review",
+                "",
+                "## 10 Punkte: Was wurde wirklich erreicht?",
+                *[f"{idx}. {item}" for idx, item in enumerate(achievements, 1)],
+                "",
+                "## 5 größte Schwächen",
+                *[f"{idx}. {item}" for idx, item in enumerate(weaknesses[:5], 1)],
+                "",
+                "## Verbesserungsplan",
+                *[f"{idx}. {item}" for idx, item in enumerate(plan, 1)],
+                "",
+                "## Sichere Änderungen",
+                *(f"- {item}" for item in (safe_changes or ["Keine Zustandsänderung angefordert."])),
+            ]
+            atomic_write(md_path, "\n".join(md) + "\n")
+            self._append_trace(project_dir, {
+                "project": project_dir.name,
+                "step": self._step(project_dir),
+                "approach_id": status.get("active_approach_id"),
+                "action": "quick_review",
+                "result": md_path.name,
+                "new_latex_written": False,
+                "rank_before": None,
+                "rank_after": None,
+                "reason_for_rank_change": "",
+                "next_action": "Run /research_quality_audit then /research_autopilot_plan.",
+            })
+            return "\n".join([
+                f"Quick Review geschrieben: {md_path}",
+                "",
+                "Kurzurteil:",
+                *[f"- {item}" for item in weaknesses[:5]],
+                "",
+                "Naechste Befehle:",
+                "/research_quality_audit",
+                "/research_autopilot_plan",
+                "/research_autopilot_next",
+            ])
+
     def quality_audit(self) -> str:
         project_dir = self._require_active()
         status = self._load_json(project_dir / "status.json", {})
