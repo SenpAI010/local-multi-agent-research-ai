@@ -209,7 +209,29 @@ def test_llm_proof_attempt_runner_acceptance() -> None:
         assert checkpoint.get("stagnation_status") in {"none", "risk_detected"}
 
 
+def test_start_new_epoch_with_no_viable_target_pauses() -> None:
+    with TemporaryDirectory() as tmp:
+        manager = ResearchProjectManager(Path(tmp))
+        manager.start("Epoch guard test")
+        project_dir = Path(tmp) / "research" / "epoch_guard_test"
+        approaches = json.loads((project_dir / "approaches.json").read_text(encoding="utf-8"))
+        for approach in approaches:
+            approach["status"] = "stagnation_limited"
+            approach["rank"] = 6
+        (project_dir / "approaches.json").write_text(json.dumps(approaches), encoding="utf-8")
+
+        result = manager._execute_autopilot_action(
+            project_dir,
+            {"action": "start_new_epoch", "target": "", "reason": "regression"},
+        )
+
+        checkpoint = json.loads((project_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        assert "Autopilot pausiert" in result
+        assert checkpoint["stagnation_status"] == "autopilot_paused_no_high_value_action"
+
+
 if __name__ == "__main__":
     test_research_workspace_lifecycle()
     test_llm_proof_attempt_runner_acceptance()
+    test_start_new_epoch_with_no_viable_target_pauses()
     print("research mode tests passed")

@@ -2699,6 +2699,8 @@ class ResearchProjectManager:
 
         def add(candidates: List[Dict[str, Any]], score: int, plan: Dict[str, Any], research_value: bool = True) -> None:
             key = self._autopilot_action_key(plan)
+            if plan.get("action") in {"switch_approach", "start_new_epoch", "generate_new_lemma", "run_experiment", "analyze_experiment"} and not str(plan.get("target") or "").strip():
+                return
             if key in failed or key in exhausted:
                 return
             max_attempts = 3 if plan.get("action") == "generate_new_lemma" else 2
@@ -2775,7 +2777,8 @@ class ResearchProjectManager:
 
         if active_needs_switch() or self._approach_actions_exhausted(active, best, exhausted, failed):
             target = self._preferred_alternate_approach_id(approaches, active_id)
-            add(candidates, 80, self._plan("switch_approach", target, "Current approach has no non-exhausted high-value action; switch once."), research_value=False)
+            if target:
+                add(candidates, 80, self._plan("switch_approach", target, "Current approach has no non-exhausted high-value action; switch once."), research_value=False)
 
         if not active_needs_switch():
             self._add_global_approach_candidates(project_dir, candidates, approaches, active_id, exhausted, failed, attempts, last_key, last_progress)
@@ -2783,13 +2786,14 @@ class ResearchProjectManager:
         if not candidates:
             if state.get("continuous_research"):
                 target = self._preferred_alternate_approach_id(approaches, active_id)
-                return self._plan(
-                    "start_new_epoch",
-                    target,
-                    "Current epoch exhausted its non-repeating actions; rotate approach and begin a fresh bounded research epoch.",
-                    epoch=int(state.get("research_epoch", 0)) + 1,
-                    policy_score=10,
-                )
+                if target:
+                    return self._plan(
+                        "start_new_epoch",
+                        target,
+                        "Current epoch exhausted its non-repeating actions; rotate approach and begin a fresh bounded research epoch.",
+                        epoch=int(state.get("research_epoch", 0)) + 1,
+                        policy_score=10,
+                    )
             return self._plan(
                 "pause_no_high_value",
                 None,
@@ -2872,6 +2876,8 @@ class ResearchProjectManager:
             return True
 
         def add(score: int, plan: Dict[str, Any]) -> None:
+            if plan.get("action") in {"switch_approach", "start_new_epoch", "generate_new_lemma", "run_experiment", "analyze_experiment"} and not str(plan.get("target") or "").strip():
+                return
             if allowed(plan):
                 candidates.append({
                     "score": score,
@@ -2946,9 +2952,14 @@ class ResearchProjectManager:
             return self._clean_invalid_domain_noise(project_dir)
         if action == "start_new_epoch":
             approaches = self._load_json(project_dir / "approaches.json", [])
-            target_id = str(target or self._preferred_alternate_approach_id(approaches, self._load_json(project_dir / "status.json", {}).get("active_approach_id")))
-            self._find_approach(approaches, target_id)
             status = self._load_json(project_dir / "status.json", {})
+            target_id = str(target or self._preferred_alternate_approach_id(approaches, status.get("active_approach_id"))).strip()
+            if not target_id:
+                return self._pause_no_high_value(project_dir, "No viable approach remains for a fresh research epoch.")
+            try:
+                self._find_approach(approaches, target_id)
+            except Exception:
+                return self._pause_no_high_value(project_dir, f"Planned epoch target is invalid: {target_id}")
             checkpoint = self._load_json(project_dir / "checkpoint.json", {})
             status["active_approach_id"] = target_id
             status["focused_approach_id"] = None
@@ -2962,15 +2973,18 @@ class ResearchProjectManager:
         if action == "ask_enable_web_research":
             return "Offline literature exhausted. Web research required or switch approach. Nutze /research_web_on, oder lasse den Autopilot mit refine/disprove/switch fortfahren."
         if action == "pause_no_high_value":
-            status = self._load_json(project_dir / "status.json", {})
-            checkpoint = self._load_json(project_dir / "checkpoint.json", {})
-            status["current_status"] = "autopilot_paused_no_high_value_action"
-            status["last_updated"] = now_iso()
-            checkpoint["stagnation_status"] = "autopilot_paused_no_high_value_action"
-            checkpoint["reason_for_next_step"] = "No high-value non-repeating action remains."
-            self._save_all(project_dir, status=status, checkpoint=checkpoint)
-            return "Autopilot pausiert: keine sinnvolle nicht-wiederholende Aktion gefunden."
+            return self._pause_no_high_value(project_dir, str(plan.get("reason") or "No high-value non-repeating action remains."))
         return f"No actionable autopilot action: {action}"
+
+    def _pause_no_high_value(self, project_dir: Path, reason: str) -> str:
+        status = self._load_json(project_dir / "status.json", {})
+        checkpoint = self._load_json(project_dir / "checkpoint.json", {})
+        status["current_status"] = "autopilot_paused_no_high_value_action"
+        status["last_updated"] = now_iso()
+        checkpoint["stagnation_status"] = "autopilot_paused_no_high_value_action"
+        checkpoint["reason_for_next_step"] = reason
+        self._save_all(project_dir, status=status, checkpoint=checkpoint)
+        return "Autopilot pausiert: keine sinnvolle nicht-wiederholende Aktion gefunden."
 
     def _autopilot_action_key(self, plan: Dict[str, Any]) -> str:
         action = str(plan.get("action") or "")
