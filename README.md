@@ -139,4 +139,3 @@ Nicht hochladen:
 - Screenshots / OCR-Daten
 - generierte PDFs / LaTeX-Aux-Dateien
 - persönliche `.env`-Dateien
-
