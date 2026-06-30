@@ -4,6 +4,9 @@ Stores and retrieves knowledge with semantic similarity search.
 """
 
 import json
+import os
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -30,6 +33,7 @@ class SemanticStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.fallback_file = self.db_path / "knowledge_fallback.json"
         self.use_fallback = chromadb is None
+        self._fallback_lock = threading.RLock()
 
         if self.use_fallback:
             self.collection = None
@@ -50,18 +54,36 @@ class SemanticStore:
         )
 
     def _load_fallback(self) -> List[Dict[str, Any]]:
-        if not self.fallback_file.exists():
-            return []
-        try:
-            return json.loads(self.fallback_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
+        with self._fallback_lock:
+            if not self.fallback_file.exists():
+                return []
+            try:
+                return json.loads(self.fallback_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                backup = self.fallback_file.with_suffix(self.fallback_file.suffix + ".corrupt")
+                try:
+                    self.fallback_file.replace(backup)
+                except OSError:
+                    pass
+                return []
 
     def _save_fallback(self, items: List[Dict[str, Any]]) -> None:
-        self.fallback_file.write_text(
-            json.dumps(items, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        with self._fallback_lock:
+            self.fallback_file.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{self.fallback_file.name}.",
+                suffix=".tmp",
+                dir=str(self.fallback_file.parent),
+                text=True,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(items, indent=2, ensure_ascii=False))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, self.fallback_file)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
 
     def _token_relevance(self, query: str, text: str) -> float:
         query_tokens = set(re.findall(r"\w+", query.lower()))

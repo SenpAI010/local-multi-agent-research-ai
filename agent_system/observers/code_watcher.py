@@ -114,7 +114,16 @@ class CodeWatcher:
     def _iter_files(self):
         for root in self.allowed_roots:
             for path in root.rglob("*"):
+                if path.is_symlink():
+                    continue
                 if not path.is_file():
+                    continue
+                try:
+                    resolved = path.resolve()
+                    root_resolved = root.resolve()
+                except OSError:
+                    continue
+                if not (resolved == root_resolved or root_resolved in resolved.parents):
                     continue
                 if path.suffix.lower() not in self.DEFAULT_EXTENSIONS:
                     continue

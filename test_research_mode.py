@@ -234,13 +234,20 @@ def test_latex_patch_blocks_file_input_and_verbatim_escape() -> None:
     with TemporaryDirectory() as tmp:
         manager = ResearchProjectManager(Path(tmp))
         patch, issues = manager._validate_latex_patch(
-            r"\paragraph{Bad.}\input{../../secret}\end{verbatim}\write18{whoami}",
+            r"\paragraph{Bad.}\input{../../secret}\includegraphics{secret.png}\pdfximage file{secret.pdf}\openout1=secret.txt\verbatiminput{secret}\end {verbatim}\write18{whoami}",
             {"new_lemmas": []},
         )
         assert "unsafe_latex_commands_escaped" in " ".join(issues)
         assert r"\input" not in patch
-        escaped = manager._safe_verbatim(r'{"x":"\end{verbatim}\input{secret}"}')
+        assert r"\includegraphics" not in patch
+        assert r"\pdfximage" not in patch
+        assert r"\openout" not in patch
+        assert r"\verbatiminput" not in patch
+        assert r"\write18" not in patch
+        assert r"\end {verbatim}" not in patch
+        escaped = manager._safe_verbatim(r'{"x":"\end {verbatim}\input{secret}"}')
         assert r"\end{verbatim}" not in escaped
+        assert r"\end {verbatim}" not in escaped
 
 
 def test_quick_review_reads_workspace_and_writes_notes() -> None:

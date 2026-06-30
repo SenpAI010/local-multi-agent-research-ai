@@ -109,6 +109,21 @@ def test_include_str_and_guard_are_rejected():
         assert any("#guard" in issue for issue in result.issues)
 
 
+def test_every_module_in_multi_import_line_is_checked():
+    for import_line, blocked in (
+        ("import Mathlib Lean", "Lean"),
+        ("import Mathlib Std", "Std"),
+        ("import Mathlib Lake", "Lake"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "MultiImport.lean"
+            path.write_text(f"{import_line}\ntheorem ok : True := by trivial\n", encoding="utf-8")
+            result = Lean4Verifier(runner=_runner(0)).verify(path)
+            assert result.verified is False
+            assert result.status == "rejected_unsafe_lean_artifact"
+            assert f"import_not_allowlisted:{blocked}" in result.issues
+
+
 def test_integrity_checker_finds_undefined_symbol_dependency_and_bound_reuse():
     checker = LemmaIntegrityChecker()
     lemma = {

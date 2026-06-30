@@ -2347,7 +2347,7 @@ class ResearchProjectManager:
             return "pdflatex nicht gefunden. Installiere z.B. MiKTeX oder TeX Live, dann erneut /research_render_pdf."
         try:
             proc = subprocess.run(
-                [pdflatex, "-interaction=nonstopmode", tex.name],
+                [pdflatex, "-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error", tex.name],
                 cwd=str(project_dir),
                 capture_output=True,
                 text=True,
@@ -4853,11 +4853,11 @@ Failed approaches remain in the approach table with rank 6 and documented reason
             patch += "\n\\paragraph{HallucinationGuard.} Final proof wording was removed; this remains unverified."
             issues.append("forbidden_finality_removed")
         unsafe_commands = re.findall(
-            r"\\(input|include|openin|read|write|immediate|usepackage|documentclass|catcode|csname|newread|newwrite|every[a-zA-Z]*)\b",
+            r"\\(input|include|includegraphics|pdfximage|pdfrefximage|pdffiledump|pdffilesize|pdfmdfivesum|openin|openout|closein|closeout|read|write|immediate|usepackage|documentclass|catcode|csname|newread|newwrite|verbatiminput|lstinputlisting|bibliography|bibliographystyle|special|scantokens|end|every[a-zA-Z]*)\b",
             patch,
             flags=re.I,
         )
-        if unsafe_commands or "\\end{verbatim}" in patch:
+        if unsafe_commands or re.search(r"\\end\s*\{\s*verbatim\s*\}", patch, re.I):
             patch = self._esc(patch)
             patch = "\\paragraph{Sanitized model text.} " + patch
             issues.append("unsafe_latex_commands_escaped:" + ",".join(sorted(set(map(str.lower, unsafe_commands)))[:8]))
@@ -4868,7 +4868,7 @@ Failed approaches remain in the approach table with rank 6 and documented reason
         return patch, issues
 
     def _safe_verbatim(self, text: str) -> str:
-        return str(text).replace("\\end{verbatim}", "\\textbackslash{}end\\{verbatim\\}")
+        return re.sub(r"\\end\s*\{\s*verbatim\s*\}", r"\\textbackslash{}end\\{verbatim\\}", str(text), flags=re.I)
 
     def _proof_attempt_tex(self, step: int, active: Dict[str, Any], result: Dict[str, Any], patch: str, issues: List[str]) -> str:
         gaps = result.get("open_gaps", [])

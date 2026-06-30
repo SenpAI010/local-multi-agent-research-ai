@@ -19,10 +19,17 @@ class SystemTools:
         self.allowlist = {
             "python": {"-m"},
             "python.exe": {"-m"},
-            "git": {"status", "diff", "log", "pull", "branch", "rev-parse"},
-            "git.exe": {"status", "diff", "log", "pull", "branch", "rev-parse"},
+            "git": {"status", "diff", "log", "branch", "rev-parse"},
+            "git.exe": {"status", "diff", "log", "branch", "rev-parse"},
         }
         self.allowed_python_modules = {"py_compile", "pytest"}
+        self.allowed_git_flags = {
+            "status": {"--short", "--porcelain"},
+            "log": {"--oneline", "--decorate", "-n", "--max-count"},
+            "branch": {"--show-current"},
+            "rev-parse": {"--show-toplevel", "--is-inside-work-tree"},
+            "diff": {"--", "--stat", "--name-only", "--cached"},
+        }
         
         # Blockierte Token
         self.blocked_tokens = {
@@ -116,5 +123,30 @@ class SystemTools:
         if program.lower() in {"python", "python.exe"}:
             if len(args) < 2 or args[1] not in self.allowed_python_modules:
                 return False, "Only python -m py_compile or python -m pytest are allowed."
+        if program.lower() in {"git", "git.exe"}:
+            return self._validate_git_args(args)
 
+        return True, "OK"
+
+    def _validate_git_args(self, args: List[str]) -> Tuple[bool, str]:
+        if not args:
+            return False, "Git subcommand required."
+        sub = args[0]
+        if sub not in self.allowed_git_flags:
+            return False, f"Git subcommand not allowed: {sub}"
+        if any(a == "--no-index" or a.startswith("-c") for a in args[1:]):
+            return False, "Git --no-index and inline config are blocked."
+        allowed = self.allowed_git_flags[sub]
+        path_mode = False
+        for arg in args[1:]:
+            if arg == "--":
+                path_mode = True
+                continue
+            if path_mode or not arg.startswith("-"):
+                p = Path(arg)
+                if p.is_absolute() or ".." in p.parts:
+                    return False, "Git path arguments must be relative sandbox paths."
+                continue
+            if arg not in allowed and not (sub == "log" and arg.isdigit()):
+                return False, f"Git option not allowed for {sub}: {arg}"
         return True, "OK"

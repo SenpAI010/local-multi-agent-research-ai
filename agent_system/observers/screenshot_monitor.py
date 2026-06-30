@@ -129,7 +129,21 @@ class ScreenshotMonitor:
         filepath = self.save_dir / filename
         
         img.save(filepath, "PNG")
+        self._prune_saved_screenshots()
         return filepath
+
+    def _prune_saved_screenshots(self) -> None:
+        if not self.save_dir:
+            return
+        try:
+            files = sorted(
+                self.save_dir.glob("screenshot_*.png"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for path in files[:-max(1, int(self.max_screenshots))]:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def start(self) -> None:
         """Startet den Monitor (blockierend)."""

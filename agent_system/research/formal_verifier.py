@@ -110,9 +110,17 @@ class Lean4Verifier:
             for pattern in self.DANGEROUS_COMMANDS
             if re.search(pattern, scanned, re.I | re.M)
         ]
-        for module in re.findall(r"^\s*import\s+([A-Za-z0-9_'.]+)", scanned, re.M):
-            if not any(module == allowed or module.startswith(allowed + ".") for allowed in self.IMPORT_ALLOWLIST):
-                issues.append(f"import_not_allowlisted:{module}")
+        issues.extend(self._import_policy_issues(scanned))
+        return issues
+
+    def _import_policy_issues(self, scanned: str) -> List[str]:
+        issues: List[str] = []
+        for match in re.finditer(r"(?m)^\s*import\s+([^\n]+)$", scanned):
+            modules = re.findall(r"[A-Za-z][A-Za-z0-9_'.]*", match.group(1))
+            for module in modules:
+                allowed = any(module == prefix or module.startswith(prefix + ".") for prefix in self.IMPORT_ALLOWLIST)
+                if not allowed:
+                    issues.append(f"import_not_allowlisted:{module}")
         return issues
 
     def _strip_lean_comments(self, content: str) -> str:
