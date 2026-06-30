@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv_*/
+venv/
+env/
+
+# Local agent runtime state: contains memory DBs, screenshots, generated reports,
+# research workspaces, ChromaDB data and other machine-specific/private artifacts.
+agent_sandbox/
+
+# Local databases / vector stores / logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.jsonl
+chroma_db/
+
+# Generated research artifacts
+reports/
+proof_attempts/
+formal_proofs/
+experiments/
+figures/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+*.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.lnk
+
+# Local secrets / config
+.env
+.env.*
+!.env.example
+

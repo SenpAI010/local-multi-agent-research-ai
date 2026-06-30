@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pong gegen deinen Agenten</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="game-shell">
+    <section class="hud" aria-label="Spielstatus">
+      <div>
+        <span class="label">Umut</span>
+        <strong id="playerScore">0</strong>
+      </div>
+      <div class="status">
+        <span id="roundText">Bereit</span>
+        <small id="hintText">W/S oder Maus bewegen. Leertaste startet.</small>
+      </div>
+      <div>
+        <span class="label">Agent</span>
+        <strong id="aiScore">0</strong>
+      </div>
+    </section>
+
+    <canvas id="game" width="960" height="540" aria-label="Pong Spielfeld"></canvas>
+
+    <section class="controls" aria-label="Steuerung">
+      <button id="startBtn" type="button">Start</button>
+      <button id="pauseBtn" type="button">Pause</button>
+      <button id="resetBtn" type="button">Reset</button>
+      <label>
+        KI-Staerke
+        <input id="difficulty" type="range" min="0.35" max="0.95" value="0.62" step="0.01">
+      </label>
+      <label class="model-toggle">
+        <input id="ollamaMode" type="checkbox">
+        Ollama spielt rechts
+      </label>
+    </section>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>
