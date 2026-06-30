@@ -41,7 +41,7 @@ class Lean4Verifier:
         r"\bunsafe\b", r"by\s*\n?\s*exact\s+Classical\.choice",
     )
     DANGEROUS_COMMANDS = (
-        r"^\s*#eval\b",
+        r"#eval\b",
         r"\brun_tac\b",
         r"\belab\b",
         r"\bsyntax\b",
@@ -100,15 +100,23 @@ class Lean4Verifier:
         return [f"forbidden_placeholder:{pattern}" for pattern in self.PLACEHOLDERS if re.search(pattern, content, re.I)]
 
     def _sandbox_policy_issues(self, content: str) -> List[str]:
+        scanned = self._strip_lean_comments(content)
         issues = [
             f"forbidden_lean_command:{pattern}"
             for pattern in self.DANGEROUS_COMMANDS
-            if re.search(pattern, content, re.I | re.M)
+            if re.search(pattern, scanned, re.I | re.M)
         ]
-        for module in re.findall(r"^\s*import\s+([A-Za-z0-9_'.]+)", content, re.M):
+        for module in re.findall(r"^\s*import\s+([A-Za-z0-9_'.]+)", scanned, re.M):
             if not any(module == allowed or module.startswith(allowed + ".") for allowed in self.IMPORT_ALLOWLIST):
                 issues.append(f"import_not_allowlisted:{module}")
         return issues
+
+    def _strip_lean_comments(self, content: str) -> str:
+        # Lean treats block comments as whitespace; remove them before scanning
+        # so patterns like "/- comment -/ #eval ..." cannot hide commands.
+        content = re.sub(r"/-.*?-/", " ", content, flags=re.S)
+        content = re.sub(r"--.*?$", " ", content, flags=re.M)
+        return content
 
 
 class LemmaIntegrityChecker:

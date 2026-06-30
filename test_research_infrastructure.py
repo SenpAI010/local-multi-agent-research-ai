@@ -68,7 +68,7 @@ def test_background_research_checkpoints_and_completes():
     with tempfile.TemporaryDirectory() as tmp:
         manager = ResearchProjectManager(Path(tmp))
         manager.start("Background test")
-        manager.autopilot_next = lambda: json.dumps({"action": "generate_new_lemma", "state_summary": {"current_status": "autopilot_paused_no_high_value_action"}})
+        manager.autopilot_next = lambda project_dir=None: json.dumps({"action": "generate_new_lemma", "state_summary": {"current_status": "autopilot_paused_no_high_value_action"}})
         manager.background_research_start(2, interval_seconds=0.1, max_minutes=1)
         deadline = time.time() + 3
         state = {}

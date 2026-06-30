@@ -75,7 +75,12 @@ class WebResearchProxy:
 
     def config(self) -> Dict[str, Any]:
         data = self._load_json(self.config_path, {})
-        allowlist = data.get("allowlist") or DEFAULT_ALLOWLIST
+        if "allowlist" in data:
+            allowlist = data.get("allowlist")
+            if not isinstance(allowlist, list):
+                allowlist = DEFAULT_ALLOWLIST
+        else:
+            allowlist = DEFAULT_ALLOWLIST
         return {
             "enabled": bool(data.get("enabled", self.enabled)),
             "allowlist": sorted(set(str(d).lower().strip() for d in allowlist if str(d).strip())),

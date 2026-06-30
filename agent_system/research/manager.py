@@ -19,6 +19,7 @@ import urllib.request
 import warnings
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1137,12 +1138,7 @@ class ResearchProjectManager:
         def worker(bound_project_dir: Path) -> None:
             while state["completed_steps"] < max_steps and time.time() < deadline and not self._background_stop.is_set():
                 try:
-                    try:
-                        output = self.autopilot_next(project_dir=bound_project_dir)
-                    except TypeError:
-                        # Backward-compatible for tests/custom monkeypatches that still
-                        # expose the old no-argument autopilot_next signature.
-                        output = self.autopilot_next()
+                    output = self.autopilot_next(project_dir=bound_project_dir)
                     state["completed_steps"] += 1
                     state["last_output"] = str(output)[-2500:]
                     state["last_checkpoint_at"] = now_iso()
@@ -1195,10 +1191,13 @@ class ResearchProjectManager:
         started_at = str(previous.get("started_at") or now_iso())
         try:
             started_ts = datetime.fromisoformat(started_at)
-            elapsed_minutes = max(0.0, (datetime.now() - started_ts).total_seconds() / 60.0)
+            elapsed_seconds = max(0.0, (datetime.now() - started_ts).total_seconds())
         except Exception:
-            elapsed_minutes = 0.0
-        remaining_minutes = max(1, int(float(previous.get("max_minutes", 60)) - elapsed_minutes))
+            elapsed_seconds = 0.0
+        remaining_seconds = float(previous.get("max_minutes", 60)) * 60.0 - elapsed_seconds
+        if remaining_seconds <= 0:
+            return "Background time budget is already exhausted."
+        remaining_minutes = max(1, int(ceil(remaining_seconds / 60.0)))
         result = json.loads(self.background_research_start(
             total_steps,
             float(previous.get("interval_seconds", 5)),
@@ -2262,11 +2261,6 @@ class ResearchProjectManager:
         status: Optional[Dict[str, Any]] = None,
         checkpoint: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if approaches is not None:
-            atomic_json(project_dir / "approaches.json", approaches)
-            self._write_approaches_csv(project_dir, approaches)
-        if claims is not None:
-            atomic_json(project_dir / "claims.json", claims)
         if formal_lemmas is not None:
             for lemma in formal_lemmas:
                 if isinstance(lemma, dict) and lemma.get("proof_status") == "formally_verified" and not self._formal_record_is_current(lemma):
@@ -2274,6 +2268,26 @@ class ResearchProjectManager:
                     lemma["risk"] = "high"
                     lemma.setdefault("formal_verification", {})["status"] = "stale_or_invalid_artifact"
                     lemma["formal_verification"]["verified"] = False
+        snapshot_path = project_dir / "project_state_snapshot.json"
+        previous_snapshot = self._load_json(snapshot_path, {})
+        snapshot = {
+            "schema_version": 1,
+            "revision": int(previous_snapshot.get("revision", 0) or 0) + 1,
+            "saved_at": now_iso(),
+            "approaches": approaches if approaches is not None else self._load_json(project_dir / "approaches.json", []),
+            "claims": claims if claims is not None else self._load_json(project_dir / "claims.json", []),
+            "formal_lemmas": formal_lemmas if formal_lemmas is not None else self._load_json(project_dir / "formal_lemmas.json", []),
+            "sources": sources if sources is not None else self._load_json(project_dir / "sources.json", []),
+            "status": status if status is not None else self._load_json(project_dir / "status.json", {}),
+            "checkpoint": checkpoint if checkpoint is not None else self._load_json(project_dir / "checkpoint.json", {}),
+        }
+        atomic_json(snapshot_path, snapshot)
+        if approaches is not None:
+            atomic_json(project_dir / "approaches.json", approaches)
+            self._write_approaches_csv(project_dir, approaches)
+        if claims is not None:
+            atomic_json(project_dir / "claims.json", claims)
+        if formal_lemmas is not None:
             atomic_json(project_dir / "formal_lemmas.json", formal_lemmas)
         if sources is not None:
             atomic_json(project_dir / "sources.json", sources)
@@ -2289,7 +2303,7 @@ class ResearchProjectManager:
                 "ts": now_iso(),
                 "file": str(project_dir / "main.tex"),
                 "error": str(exc),
-                "message": "LaTeX render/write failed, but JSON state and checkpoint were kept consistent.",
+                "message": "LaTeX render/write failed after the project snapshot and JSON views were written.",
             }
             atomic_json(project_dir / "latex_error.json", error)
             self._append_trace(project_dir, {

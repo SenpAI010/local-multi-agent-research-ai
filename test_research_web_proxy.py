@@ -4,6 +4,7 @@ import json
 
 from agent_system.research import ResearchProjectManager
 from agent_system.research.web_proxy import WebResearchProxy
+from agent_system.tools.web import WebTools
 
 
 def test_web_proxy_blocks_unsafe_targets():
@@ -28,6 +29,39 @@ def test_web_proxy_allowlist_management_blocks_private_domains():
         except ValueError:
             raised = True
         assert raised
+
+
+def test_empty_allowlist_remains_empty():
+    with TemporaryDirectory() as tmp:
+        proxy = WebResearchProxy(Path(tmp), enabled=True)
+        for domain in list(proxy.allowlist()):
+            proxy.remove_domain(domain)
+        assert proxy.allowlist() == []
+        assert not proxy.fetch_text("https://arxiv.org/")["allowed"]
+
+
+def test_general_webtools_blocks_redirect_to_private_target():
+    class FakeResponse:
+        status_code = 302
+        headers = {"Location": "http://127.0.0.1:11434/api/tags"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=65536, decode_unicode=True):
+            return iter(())
+
+    tools = WebTools()
+    tools._resolves_to_private = lambda host: False
+    import agent_system.tools.web as web_mod
+    original_get = web_mod.requests.get
+    try:
+        web_mod.requests.get = lambda *args, **kwargs: FakeResponse()
+        result = tools.web_fetch("https://example.com/start")
+    finally:
+        web_mod.requests.get = original_get
+    assert result["ok"] is False
+    assert "private" in result["error"].lower()
 
 
 def test_minimal_query_regex_does_not_crash():
@@ -134,6 +168,8 @@ def test_research_web_search_integrates_sources():
 if __name__ == "__main__":
     test_web_proxy_blocks_unsafe_targets()
     test_web_proxy_allowlist_management_blocks_private_domains()
+    test_empty_allowlist_remains_empty()
+    test_general_webtools_blocks_redirect_to_private_target()
     test_minimal_query_regex_does_not_crash()
     test_research_web_search_does_not_crash_and_audit_works()
     test_research_web_status_and_claim_trust()

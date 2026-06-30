@@ -83,6 +83,16 @@ def test_sorry_axiom_and_admit_are_rejected_even_if_compiler_accepts():
             assert result.status == "rejected_placeholder"
 
 
+def test_block_comment_cannot_hide_eval():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Eval.lean"
+        path.write_text("import Mathlib\n/- harmless looking comment -/ #eval 1 + 1\n", encoding="utf-8")
+        result = Lean4Verifier(runner=_runner(0)).verify(path)
+        assert result.verified is False
+        assert result.status == "rejected_unsafe_lean_artifact"
+        assert any("#eval" in issue for issue in result.issues)
+
+
 def test_integrity_checker_finds_undefined_symbol_dependency_and_bound_reuse():
     checker = LemmaIntegrityChecker()
     lemma = {
