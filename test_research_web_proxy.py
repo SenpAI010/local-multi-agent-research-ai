@@ -51,6 +51,9 @@ def test_general_webtools_blocks_redirect_to_private_target():
         def iter_content(self, chunk_size=65536, decode_unicode=True):
             return iter(())
 
+        def close(self):
+            return None
+
     tools = WebTools()
     tools._resolves_to_private = lambda host: False
     import agent_system.tools.web as web_mod

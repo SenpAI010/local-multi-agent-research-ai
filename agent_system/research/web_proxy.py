@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import socket
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -465,6 +467,12 @@ class WebResearchProxy:
 
     def _atomic_json(self, path: Path, data: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, indent=2, ensure_ascii=False))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, path)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)

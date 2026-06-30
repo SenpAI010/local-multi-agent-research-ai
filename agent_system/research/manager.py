@@ -1119,6 +1119,7 @@ class ResearchProjectManager:
             "project_dir": str(project_dir),
             "max_steps": max_steps,
             "completed_steps": initial_completed_steps,
+            "resumed_from_completed_steps": initial_completed_steps if initial_completed_steps else 0,
             "interval_seconds": interval_seconds,
             "max_minutes": max_minutes,
             "started_at": started_at or now_iso(),
@@ -1136,32 +1137,37 @@ class ResearchProjectManager:
         self._background_project_dir = project_dir
 
         def worker(bound_project_dir: Path) -> None:
-            while state["completed_steps"] < max_steps and time.time() < deadline and not self._background_stop.is_set():
-                try:
-                    output = self.autopilot_next(project_dir=bound_project_dir)
-                    state["completed_steps"] += 1
-                    state["last_output"] = str(output)[-2500:]
-                    state["last_checkpoint_at"] = now_iso()
-                    atomic_json(state_path, state)
-                except Exception as exc:
-                    state["last_error"] = str(exc)
-                    state["status"] = "failed"
-                    atomic_json(state_path, state)
-                    return
-                try:
-                    event = json.loads(str(output))
-                except Exception:
-                    event = {}
-                event_action = str(event.get("action", ""))
-                event_status = str(event.get("status", ""))
-                if event_action in {"pause_no_high_value", "ask_enable_web_research"} or event_status == "waiting_for_user_decision":
-                    state["status"] = "paused"
-                    atomic_json(state_path, state)
-                    return
-                self._background_stop.wait(interval_seconds)
-            state["status"] = "stopped" if self._background_stop.is_set() else ("time_limit" if time.time() >= deadline else "completed")
-            state["completed_at"] = now_iso()
-            atomic_json(state_path, state)
+            try:
+                while state["completed_steps"] < max_steps and time.time() < deadline and not self._background_stop.is_set():
+                    try:
+                        output = self.autopilot_next(project_dir=bound_project_dir)
+                        state["completed_steps"] += 1
+                        state["last_output"] = str(output)[-2500:]
+                        state["last_checkpoint_at"] = now_iso()
+                        atomic_json(state_path, state)
+                    except Exception as exc:
+                        state["last_error"] = str(exc)
+                        state["status"] = "failed"
+                        atomic_json(state_path, state)
+                        return
+                    try:
+                        event = json.loads(str(output))
+                    except Exception:
+                        event = {}
+                    event_action = str(event.get("action", ""))
+                    event_status = str(event.get("status", ""))
+                    if event_action in {"pause_no_high_value", "ask_enable_web_research"} or event_status == "waiting_for_user_decision":
+                        state["status"] = "paused"
+                        atomic_json(state_path, state)
+                        return
+                    self._background_stop.wait(interval_seconds)
+                state["status"] = "stopped" if self._background_stop.is_set() else ("time_limit" if time.time() >= deadline else "completed")
+                state["completed_at"] = now_iso()
+                atomic_json(state_path, state)
+            finally:
+                with self._state_lock:
+                    if self._background_project_dir == bound_project_dir:
+                        self._background_project_dir = None
 
         self._background_thread = threading.Thread(target=worker, args=(project_dir,), name=f"research-{project_dir.name}", daemon=True)
         self._background_thread.start()
@@ -1169,13 +1175,19 @@ class ResearchProjectManager:
 
     def background_research_stop(self) -> str:
         self._background_stop.set()
-        project_dir = self._background_project_dir or self._require_active()
+        if self._background_thread and self._background_thread.is_alive() and self._background_project_dir:
+            project_dir = self._background_project_dir
+        else:
+            project_dir = self._require_active()
         state = self._load_json(project_dir / "background_research.json", {})
         state["status"] = "stop_requested"
         state["stop_requested_at"] = now_iso()
         atomic_json(project_dir / "background_research.json", state)
         if self._background_thread and self._background_thread.is_alive():
             self._background_thread.join(timeout=5)
+        if self._background_thread and not self._background_thread.is_alive():
+            self._background_thread = None
+            self._background_project_dir = None
         return "Background research stop requested."
 
     def background_research_resume(self) -> str:
@@ -1205,8 +1217,6 @@ class ResearchProjectManager:
             initial_completed_steps=completed_before,
             started_at=started_at,
         ))
-        result["resumed_from_completed_steps"] = completed_before
-        atomic_json(project_dir / "background_research.json", result)
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     def background_research_status(self) -> str:
@@ -3449,7 +3459,7 @@ Failed approaches remain in the approach table with rank 6 and documented reason
 
 \section{{Current Checkpoint}}
 \begin{{verbatim}}
-{json.dumps(checkpoint, indent=2, ensure_ascii=False)}
+{self._safe_verbatim(json.dumps(checkpoint, indent=2, ensure_ascii=False))}
 \end{{verbatim}}
 
 \section{{Next Steps}}
@@ -4684,11 +4694,23 @@ Failed approaches remain in the approach table with rank 6 and documented reason
             patch = self._strip_forbidden_finality(patch)
             patch += "\n\\paragraph{HallucinationGuard.} Final proof wording was removed; this remains unverified."
             issues.append("forbidden_finality_removed")
+        unsafe_commands = re.findall(
+            r"\\(input|include|openin|read|write|immediate|usepackage|documentclass|catcode|csname|newread|newwrite|every[a-zA-Z]*)\b",
+            patch,
+            flags=re.I,
+        )
+        if unsafe_commands or "\\end{verbatim}" in patch:
+            patch = self._esc(patch)
+            patch = "\\paragraph{Sanitized model text.} " + patch
+            issues.append("unsafe_latex_commands_escaped:" + ",".join(sorted(set(map(str.lower, unsafe_commands)))[:8]))
         lemma_text = json.dumps(proof_result.get("new_lemmas", []), ensure_ascii=False).lower()
         if proof_result.get("new_lemmas") and not any(word in lemma_text for word in ("open", "unverified", "conjecture", "hypothesis", "gap")):
             issues.append("lemma_status_missing")
             patch += "\n\\paragraph{Status.} New lemmas are treated as open/unverified until checked."
         return patch, issues
+
+    def _safe_verbatim(self, text: str) -> str:
+        return str(text).replace("\\end{verbatim}", "\\textbackslash{}end\\{verbatim\\}")
 
     def _proof_attempt_tex(self, step: int, active: Dict[str, Any], result: Dict[str, Any], patch: str, issues: List[str]) -> str:
         gaps = result.get("open_gaps", [])

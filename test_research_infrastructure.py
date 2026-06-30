@@ -79,6 +79,37 @@ def test_background_research_checkpoints_and_completes():
             time.sleep(0.05)
         assert state["status"] == "completed"
         assert state["completed_steps"] == 2
+        deadline = time.time() + 2
+        while time.time() < deadline and manager._background_thread and manager._background_thread.is_alive():
+            time.sleep(0.05)
+        assert manager._background_project_dir is None
+
+
+def test_background_resume_metadata_survives_worker_checkpoint():
+    with tempfile.TemporaryDirectory() as tmp:
+        manager = ResearchProjectManager(Path(tmp))
+        manager.start("Background resume test")
+        project = Path(tmp) / "research" / "background_resume_test"
+        previous = {
+            "status": "paused",
+            "max_steps": 2,
+            "completed_steps": 1,
+            "interval_seconds": 0.1,
+            "max_minutes": 10,
+            "started_at": "2099-01-01T00:00:00",
+        }
+        (project / "background_research.json").write_text(json.dumps(previous), encoding="utf-8")
+        manager.autopilot_next = lambda project_dir=None: json.dumps({"action": "generate_new_lemma", "state_summary": {"current_status": "active"}})
+        manager.background_research_resume()
+        deadline = time.time() + 3
+        state = {}
+        while time.time() < deadline:
+            state = json.loads(manager.background_research_status())
+            if state.get("status") == "completed":
+                break
+            time.sleep(0.05)
+        assert state["completed_steps"] == 2
+        assert state["resumed_from_completed_steps"] == 1
 
 
 def test_live_monitor_is_local_read_only_and_exposes_project_state():

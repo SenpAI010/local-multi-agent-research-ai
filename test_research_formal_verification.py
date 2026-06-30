@@ -93,6 +93,22 @@ def test_block_comment_cannot_hide_eval():
         assert any("#eval" in issue for issue in result.issues)
 
 
+def test_include_str_and_guard_are_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "ReadFile.lean"
+        path.write_text(
+            'import Mathlib\n'
+            'def secret : String := include_str ".." / "secret.txt"\n'
+            '#guard secret.length > 0\n',
+            encoding="utf-8",
+        )
+        result = Lean4Verifier(runner=_runner(0)).verify(path)
+        assert result.verified is False
+        assert result.status == "rejected_unsafe_lean_artifact"
+        assert any("include_str" in issue for issue in result.issues)
+        assert any("#guard" in issue for issue in result.issues)
+
+
 def test_integrity_checker_finds_undefined_symbol_dependency_and_bound_reuse():
     checker = LemmaIntegrityChecker()
     lemma = {

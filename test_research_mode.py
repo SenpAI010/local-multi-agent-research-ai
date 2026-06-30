@@ -230,8 +230,22 @@ def test_start_new_epoch_with_no_viable_target_pauses() -> None:
         assert checkpoint["stagnation_status"] == "autopilot_paused_no_high_value_action"
 
 
+def test_latex_patch_blocks_file_input_and_verbatim_escape() -> None:
+    with TemporaryDirectory() as tmp:
+        manager = ResearchProjectManager(Path(tmp))
+        patch, issues = manager._validate_latex_patch(
+            r"\paragraph{Bad.}\input{../../secret}\end{verbatim}\write18{whoami}",
+            {"new_lemmas": []},
+        )
+        assert "unsafe_latex_commands_escaped" in " ".join(issues)
+        assert r"\input" not in patch
+        escaped = manager._safe_verbatim(r'{"x":"\end{verbatim}\input{secret}"}')
+        assert r"\end{verbatim}" not in escaped
+
+
 if __name__ == "__main__":
     test_research_workspace_lifecycle()
     test_llm_proof_attempt_runner_acceptance()
     test_start_new_epoch_with_no_viable_target_pauses()
+    test_latex_patch_blocks_file_input_and_verbatim_escape()
     print("research mode tests passed")

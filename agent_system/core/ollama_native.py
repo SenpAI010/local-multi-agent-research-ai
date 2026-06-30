@@ -206,6 +206,15 @@ class OllamaNative:
                 # Tool-Call vorhanden?
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
+                    if len(tool_calls) > 1:
+                        return content, {
+                            "name": "__error__",
+                            "arguments": {
+                                "ok": False,
+                                "error": "multiple_tool_calls_not_supported",
+                                "count": len(tool_calls),
+                            },
+                        }
                     tool_call = tool_calls[0]  # First call
                     func_info = tool_call.get("function", {})
                     return content, {

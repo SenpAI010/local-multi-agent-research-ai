@@ -42,6 +42,10 @@ class Lean4Verifier:
     )
     DANGEROUS_COMMANDS = (
         r"#eval\b",
+        r"#guard\b",
+        r"#reduce\b",
+        r"\binclude_str\b",
+        r"\binclude_bytes\b",
         r"\brun_tac\b",
         r"\belab\b",
         r"\bsyntax\b",

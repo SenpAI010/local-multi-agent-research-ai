@@ -35,17 +35,18 @@ const esc=s=>String(s??'')
   .replaceAll('>','&gt;')
   .replaceAll('"','&quot;')
   .replaceAll("'","&#039;");
+const txt=s=>String(s??'');
 const rows=(xs,fn)=>xs.length?xs.map(fn).join(''):'<div class="muted">Noch nichts vorhanden.</div>';
 async function refresh(){try{const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();
-document.querySelector('#title').textContent='Research Live — '+esc(d.problem);document.querySelector('#stamp').textContent='Aktualisiert: '+new Date().toLocaleTimeString();
-document.querySelector('#approach').textContent=esc(d.status.active_approach_id||'–');document.querySelector('#next').textContent=esc(d.status.next_action||d.checkpoint.next_planned_step||'–');
-document.querySelector('#step').textContent=esc(d.checkpoint.last_completed_step||0);document.querySelector('#cycle').textContent='Autopilot: '+esc(d.autopilot.status||'idle')+' · Hintergrund: '+esc(d.background.status||'idle');
+document.querySelector('#title').textContent='Research Live — '+txt(d.problem);document.querySelector('#stamp').textContent='Aktualisiert: '+new Date().toLocaleTimeString();
+document.querySelector('#approach').textContent=txt(d.status.active_approach_id||'–');document.querySelector('#next').textContent=txt(d.status.next_action||d.checkpoint.next_planned_step||'–');
+document.querySelector('#step').textContent=txt(d.checkpoint.last_completed_step||0);document.querySelector('#cycle').textContent='Autopilot: '+txt(d.autopilot.status||'idle')+' · Hintergrund: '+txt(d.background.status||'idle');
 document.querySelector('#counts').innerHTML=`Claims: <b>${d.claims.length}</b><br>Lemmata: <b>${d.lemmas.length}</b><br>Quellen: <b>${d.sources.length}</b><br>Formal verifiziert: <b class="good">${d.lemmas.filter(x=>x.proof_status==='formally_verified').length}</b>`;
 document.querySelector('#trace').innerHTML=rows(d.trace.slice().reverse(),x=>`<div class="row"><b>${esc(x.action)}</b> <span class="muted">${esc(x.approach_id||'')}</span><br>${esc(x.result)}</div>`);
 document.querySelector('#gaps').innerHTML=rows(d.status.known_gaps||[],x=>`<div class="row warn">${esc(x)}</div>`);
 document.querySelector('#lemmas').innerHTML=rows(d.lemmas,x=>`<div class="row"><b>${esc(x.lemma_id)}</b> <span class="${x.proof_status==='formally_verified'?'good':'warn'}">${esc(x.proof_status)}</span><br>${esc(x.title)}<br><span class="muted">${esc(x.conclusion)}</span></div>`);
 document.querySelector('#claims').innerHTML=rows(d.claims.slice(-12),x=>`<div class="row"><b>${esc(x.claim_id)}</b> <span class="${x.status==='formally_verified'||x.status==='source_supported'?'good':'warn'}">${esc(x.status)}</span><br>${esc(x.text)}</div>`);
-document.querySelector('#latex').textContent=esc(d.latex_tail);
+document.querySelector('#latex').textContent=txt(d.latex_tail);
 }catch(e){document.querySelector('#stamp').textContent='Verbindung unterbrochen: '+e;}}
 refresh();setInterval(refresh,1500);
 </script></body></html>"""

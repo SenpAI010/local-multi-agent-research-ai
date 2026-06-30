@@ -105,15 +105,15 @@ class WebTools:
                 )
             except Exception as e:
                 return {"ok": False, "error": str(e)}
-            if 300 <= r.status_code < 400:
-                if redirect_count >= 3:
-                    return {"ok": False, "error": "too_many_redirects"}
-                location = r.headers.get("Location")
-                if not location:
-                    return {"ok": False, "error": "redirect_without_location"}
-                current_url = urljoin(current_url, location)
-                continue
             try:
+                if 300 <= r.status_code < 400:
+                    if redirect_count >= 3:
+                        return {"ok": False, "error": "too_many_redirects"}
+                    location = r.headers.get("Location")
+                    if not location:
+                        return {"ok": False, "error": "redirect_without_location"}
+                    current_url = urljoin(current_url, location)
+                    continue
                 r.raise_for_status()
                 chunks = []
                 total = 0
@@ -127,6 +127,8 @@ class WebTools:
                 return {"ok": True, "url": current_url, "content": "".join(chunks)[:max_chars]}
             except Exception as e:
                 return {"ok": False, "error": str(e)}
+            finally:
+                r.close()
         return {"ok": False, "error": "too_many_redirects"}
 
     def _is_private_target(self, host: str) -> bool:
